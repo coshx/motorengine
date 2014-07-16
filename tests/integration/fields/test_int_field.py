@@ -33,6 +33,17 @@ class TestIntField(BaseIntegrationTest):
         expect(result.number).to_equal(mongo_document.number)
 
     @gen_test
+    def test_can_fetch_as_long(self):
+        long_num = 489412365457170433
+        mongo_document = MongoDocument(number=long_num).save()
+
+        result = yield MotorDocument.objects.filter(number=long_num).find_all()
+        expect(result).not_to_be_null()
+
+        expect(result[0]._id).to_equal(mongo_document.id)
+        expect(result[0].number).to_equal(long_num)
+
+    @gen_test
     def test_can_integrate_backwards(self):
         motor_document = yield MotorDocument.objects.create(number=10)
 

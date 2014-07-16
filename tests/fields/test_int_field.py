@@ -21,6 +21,8 @@ class TestIntField(AsyncTestCase):
         expect(field.to_son(10.0)).to_equal(10)
         expect(field.to_son(10.0230)).to_equal(10)
         expect(field.to_son("10")).to_equal(10)
+        expect(field.to_son("1234567890123456789")).to_equal(1234567890123456789)
+        expect(field.to_son(1234567890123456789)).to_equal(1234567890123456789)
 
     def test_from_son(self):
         field = IntField()
@@ -29,6 +31,9 @@ class TestIntField(AsyncTestCase):
         expect(field.from_son(10.0)).to_equal(10)
         expect(field.from_son(10.0230)).to_equal(10)
         expect(field.from_son("10")).to_equal(10)
+        expect(field.from_son("1234567890123456789")).to_equal(1234567890123456789)
+        expect(field.from_son(1234567890123456789)).to_equal(1234567890123456789)
+
 
     def test_validate_enforces_integers(self):
         field = IntField()
@@ -36,6 +41,8 @@ class TestIntField(AsyncTestCase):
         expect(field.validate(1)).to_be_true()
         expect(field.validate("1")).to_be_true()
         expect(field.validate("qwe")).to_be_false()
+        expect(field.validate(1234567890123456789)).to_be_true()
+        expect(field.validate("1234567890123456789")).to_be_true()
 
     def test_validate_enforces_min_value(self):
         field = IntField(min_value=5)
