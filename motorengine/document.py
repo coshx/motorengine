@@ -12,7 +12,7 @@ AUTHORIZED_FIELDS = ['_id', '_values']
 
 
 class BaseDocument(object):
-    def __init__(self, *args, **kw):
+    def __init__(self, **kw):
         from motorengine.fields.dynamic_field import DynamicField
 
         self._id = kw.pop('_id', None)
@@ -26,7 +26,7 @@ class BaseDocument(object):
 
         for key, value in kw.items():
             if key not in self._db_field_map:
-                self._fields[key] = DynamicField(db_field="dynamic_field_%s" % key)
+                self._fields[key] = DynamicField(db_field="_%s" % key.lstrip('_'))
             self._values[key] = value
 
     @classmethod
@@ -130,9 +130,20 @@ class BaseDocument(object):
         '''
         self.objects.remove(instance=self, callback=callback, alias=alias)
 
-    def handle_load_reference(self, callback, references, reference_count, values_collection, field_name):
+    def fill_values_collection(self, collection, field_name, value):
+        collection[field_name] = value
+
+    def fill_list_values_collection(self, collection, field_name, value):
+        if not field_name in collection:
+            collection[field_name] = []
+        collection[field_name].append(value)
+
+    def handle_load_reference(self, callback, references, reference_count, values_collection, field_name, fill_values_method=None):
+        if fill_values_method is None:
+            fill_values_method = self.fill_values_collection
+
         def handle(*args, **kw):
-            values_collection[field_name] = args[0]
+            fill_values_method(values_collection, field_name, args[0])
 
             if reference_count > 0:
                 references.pop()
@@ -160,7 +171,7 @@ class BaseDocument(object):
             })
             return
 
-        for dereference_function, document_id, values_collection, field_name in references:
+        for dereference_function, document_id, values_collection, field_name, fill_values_method in references:
             dereference_function(
                 document_id,
                 callback=self.handle_load_reference(
@@ -168,13 +179,17 @@ class BaseDocument(object):
                     references=references,
                     reference_count=reference_count,
                     values_collection=values_collection,
-                    field_name=field_name
+                    field_name=field_name,
+                    fill_values_method=fill_values_method
                 )
             )
 
     def find_references(self, document, fields=None, results=None):
         if results is None:
             results = []
+
+        if not isinstance(document, Document):
+            return results
 
         if fields:
             fields = [
@@ -201,14 +216,29 @@ class BaseDocument(object):
                     field.reference_type.objects.get,
                     value,
                     document._values,
-                    field_name
+                    field_name,
+                    None
                 ])
 
     def find_list_field(self, document, results, field_name, field):
+        from motorengine.fields.reference_field import ReferenceField
         if self.is_list_field(field):
-            for value in document._values.get(field_name):
-                if value:
-                    self.find_references(document=value, results=results)
+            values = document._values.get(field_name)
+            if values:
+                document_type = values[0].__class__
+                if isinstance(field._base_field, ReferenceField):
+                    document_type = field._base_field.reference_type
+                    for value in values:
+                        results.append([
+                            document_type.objects.get,
+                            value,
+                            document._values,
+                            field_name,
+                            self.fill_list_values_collection
+                        ])
+                    document._values[field_name] = []
+                else:
+                    self.find_references(document=document_type, results=results)
 
     def find_embed_field(self, document, results, field_name, field):
         if self.is_embedded_field(field):
@@ -251,8 +281,10 @@ class BaseDocument(object):
         return object.__getattribute__(self, name)
 
     def __setattr__(self, name, value):
+        from motorengine.fields.dynamic_field import DynamicField
+
         if name not in AUTHORIZED_FIELDS and name not in self._fields:
-            raise ValueError("Error updating property: Invalid property '%s'." % name)
+            self._fields[name] = DynamicField(db_field="_%s" % name)
 
         if name in self._fields:
             self._values[name] = value
@@ -269,21 +301,27 @@ class BaseDocument(object):
 
     @classmethod
     def get_fields(cls, name, fields=None):
-        from motorengine import EmbeddedDocumentField
+        from motorengine import EmbeddedDocumentField, ListField
+        from motorengine.fields.dynamic_field import DynamicField
 
         if fields is None:
             fields = []
 
         if not '.' in name:
-            fields.append(cls._fields.get(name, name))
+            dyn_field = DynamicField(db_field="_%s" % name)
+            fields.append(cls._fields.get(name, dyn_field))
             return fields
 
         field_values = name.split('.')
-        obj = cls._fields.get(field_values[0], field_values[0])
+        dyn_field = DynamicField(db_field="_%s" % field_values[0])
+        obj = cls._fields.get(field_values[0], dyn_field)
         fields.append(obj)
 
         if isinstance(obj, (EmbeddedDocumentField, )):
             obj.embedded_type.get_fields(".".join(field_values[1:]), fields=fields)
+
+        if isinstance(obj, (ListField, )):
+            obj.item_type.get_fields(".".join(field_values[1:]), fields=fields)
 
         return fields
 

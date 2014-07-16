@@ -32,6 +32,11 @@ class ListField(BaseField):
         self._base_field = base_field
 
     def validate(self, value):
+        if value is None:
+            if self.required:
+                return False
+            return True
+
         for item in value:
             if not self._base_field.validate(item):
                 return False
@@ -47,7 +52,7 @@ class ListField(BaseField):
 
     def to_query(self, value):
         if not isinstance(value, (tuple, set, list)):
-            value = [value]
+            return value
 
         return {
             "$all": value
@@ -55,3 +60,13 @@ class ListField(BaseField):
 
     def from_son(self, value):
         return list(map(self._base_field.from_son, value))
+
+    @property
+    def item_type(self):
+        if hasattr(self._base_field, 'embedded_type'):
+            return self._base_field.embedded_type
+
+        if hasattr(self._base_field, 'reference_type'):
+            return self._base_field.reference_type
+
+        return self._base_field

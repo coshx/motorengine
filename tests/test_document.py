@@ -6,6 +6,7 @@ from uuid import uuid4
 from datetime import datetime
 
 from preggy import expect
+from tornado.testing import gen_test
 
 from motorengine import (
     Document, StringField, BooleanField, ListField,
@@ -160,6 +161,21 @@ class TestDocument(AsyncTestCase):
         expect(retrieved_user.emp_number).to_equal("Employee")
         expect(retrieved_user.is_admin).to_be_true()
 
+    def test_can_get_instance_with_id_string(self):
+        user = Employee(email="heynemann@gmail.com", first_name="Bernardo", last_name="Heynemann", emp_number="Employee")
+        user.save(callback=self.stop)
+        self.wait()
+
+        Employee.objects.get(str(user._id), callback=self.stop)
+        retrieved_user = self.wait()
+
+        expect(retrieved_user._id).to_equal(user._id)
+        expect(retrieved_user.email).to_equal("heynemann@gmail.com")
+        expect(retrieved_user.first_name).to_equal("Bernardo")
+        expect(retrieved_user.last_name).to_equal("Heynemann")
+        expect(retrieved_user.emp_number).to_equal("Employee")
+        expect(retrieved_user.is_admin).to_be_true()
+
     def test_after_updated_get_proper_data(self):
         user = Employee(email="heynemann@gmail.com", first_name="Bernardo", last_name="Heynemann", emp_number="Employee")
         user.save(callback=self.stop)
@@ -206,16 +222,26 @@ class TestDocument(AsyncTestCase):
         User.objects.create(email="someone@gmail.com", first_name="Bernardo", last_name="Heynemann", callback=self.stop)
         self.wait()
 
+        User.objects.create(email="other@gmail.com", first_name="Bernardo", last_name="Silva", callback=self.stop)
+        last_user = self.wait()
+
         User.objects.filter(first_name="Bernardo").filter_not(email="someone@gmail.com").find_all(callback=self.stop)
         users = self.wait()
 
         expect(users).to_be_instance_of(list)
-        expect(users).to_length(1)
+        expect(users).to_length(2)
 
         first_user = users[0]
         expect(first_user.first_name).to_equal(user.first_name)
         expect(first_user.last_name).to_equal(user.last_name)
         expect(first_user.email).to_equal(user.email)
+
+        User.objects.filter(last_name="Silva").filter(first_name="Bernardo").find_all(callback=self.stop)
+        users = self.wait()
+
+        expect(users).to_be_instance_of(list)
+        expect(users).to_length(1)
+        expect(users[0]._id).to_equal(last_user._id)
 
     def test_can_limit_number_of_documents(self):
         User.objects.create(email="heynemann@gmail.com", first_name="Bernardo", last_name="Heynemann", callback=self.stop)
@@ -881,14 +907,10 @@ class TestDocument(AsyncTestCase):
         UniqueFieldDocument.objects.create(name="test", callback=self.stop)
         self.wait()
 
-        try:
+        msg = 'The index "test.UniqueFieldDocument.$name_1" was violated when trying to save this "UniqueFieldDocument" (error code: E11000).'
+        with expect.error_to_happen(UniqueKeyViolationError):
             UniqueFieldDocument.objects.create(name="test", callback=self.stop)
             self.wait()
-        except UniqueKeyViolationError:
-            err = sys.exc_info()[1]
-            expect(err).to_have_an_error_message_of('The index "caused" was violated when trying to save this "UniqueFieldDocument" (error code: insertDocument).')
-        else:
-            assert False, "Should not have gotten this far."
 
     def test_json_field_with_document(self):
         class JSONFieldDocument(Document):
@@ -912,7 +934,9 @@ class TestDocument(AsyncTestCase):
 
     def test_dynamic_fields(self):
         class DynamicFieldDocument(Document):
-            pass
+            __collection__ = "TestDynamicFieldDocument"
+
+        self.drop_coll(DynamicFieldDocument.__collection__)
 
         obj = {
             "a": 1,
@@ -931,3 +955,179 @@ class TestDocument(AsyncTestCase):
 
         expect(loaded_document.a).to_equal(1)
         expect(loaded_document.b).to_equal(2)
+
+    def test_dynamic_fields_when_saving(self):
+        class DynamicFieldDocument(Document):
+            __collection__ = "TestDynamicFieldDocumentWhenSaving"
+
+        self.drop_coll(DynamicFieldDocument.__collection__)
+
+        doc = DynamicFieldDocument()
+        doc.a = 1
+        doc.b = 2
+        doc.save(callback=self.stop)
+        doc = self.wait()
+
+        expect(doc._id).not_to_be_null()
+        expect(doc.a).to_equal(1)
+        expect(doc.b).to_equal(2)
+
+        DynamicFieldDocument.objects.get(doc._id, self.stop)
+        loaded_document = self.wait()
+
+        expect(loaded_document.a).to_equal(1)
+        expect(loaded_document.b).to_equal(2)
+
+    def test_dynamic_fields_multiple_value(self):
+        class DynamicFieldDocument(Document):
+            __collection__ = "TestDynamicFieldDocumentMultipleValue"
+
+        self.drop_coll(DynamicFieldDocument.__collection__)
+
+        doc = DynamicFieldDocument()
+        doc.a = [1, 2, 3, 4]
+        doc.save(callback=self.stop)
+        doc = self.wait()
+
+        expect(doc._id).not_to_be_null()
+        expect(doc.a).to_be_like([1, 2, 3, 4])
+
+        DynamicFieldDocument.objects.get(a=[1, 2, 3, 4], callback=self.stop)
+        loaded_document = self.wait()
+
+        expect(loaded_document._id).to_equal(doc._id)
+
+        DynamicFieldDocument.objects.get(a=1, callback=self.stop)
+        loaded_document = self.wait()
+
+        expect(loaded_document._id).to_equal(doc._id)
+
+    def test_dynamic_fields_query(self):
+        class DynamicFieldDocument(Document):
+            __collection__ = "TestDynamicFieldDocumentQuery"
+
+        self.drop_coll(DynamicFieldDocument.__collection__)
+
+        obj = {
+            "a": 1,
+            "b": 2
+        }
+
+        DynamicFieldDocument.objects.create(callback=self.stop, **obj)
+        doc = self.wait()
+
+        expect(doc._id).not_to_be_null()
+        expect(doc.a).to_equal(1)
+
+        DynamicFieldDocument.objects.filter(**obj).count(callback=self.stop)
+        document_count = self.wait()
+
+        expect(document_count).to_equal(1)
+
+    def test_can_query_by_elem_match(self):
+        class ElemMatchDocument(Document):
+            items = ListField(IntField())
+
+        self.drop_coll(ElemMatchDocument.__collection__)
+
+        ElemMatchDocument.objects.create(items=[1, 2, 3, 4], callback=self.stop)
+        doc = self.wait()
+
+        ElemMatchDocument.objects.get(items=1, callback=self.stop)
+        loaded_document = self.wait()
+
+        expect(loaded_document._id).to_equal(doc._id)
+
+    def test_can_query_by_elem_match_when_list_of_embedded(self):
+        class ElemMatchEmbeddedDocument(Document):
+            name = StringField()
+
+        class ElemMatchEmbeddedParentDocument(Document):
+            items = ListField(EmbeddedDocumentField(ElemMatchEmbeddedDocument))
+
+        self.drop_coll(ElemMatchEmbeddedDocument.__collection__)
+        self.drop_coll(ElemMatchEmbeddedParentDocument.__collection__)
+
+        ElemMatchEmbeddedParentDocument.objects.create(items=[ElemMatchEmbeddedDocument(name="a"), ElemMatchEmbeddedDocument(name="b")], callback=self.stop)
+        doc = self.wait()
+
+        ElemMatchEmbeddedParentDocument.objects.create(items=[ElemMatchEmbeddedDocument(name="c"), ElemMatchEmbeddedDocument(name="d")], callback=self.stop)
+        doc2 = self.wait()
+
+        ElemMatchEmbeddedParentDocument.objects.filter(items__name="b").find_all(callback=self.stop)
+        loaded_document = self.wait()
+
+        expect(loaded_document).to_length(1)
+
+    def test_raw_query(self):
+        class RawQueryEmbeddedDocument(Document):
+            name = StringField()
+
+        class RawQueryDocument(Document):
+            items = ListField(EmbeddedDocumentField(RawQueryEmbeddedDocument))
+
+        self.drop_coll(RawQueryEmbeddedDocument.__collection__)
+        self.drop_coll(RawQueryDocument.__collection__)
+
+        RawQueryDocument.objects.create(items=[RawQueryEmbeddedDocument(name='a'), RawQueryEmbeddedDocument(name='b')], callback=self.stop)
+        doc = self.wait()
+
+        RawQueryDocument.objects.create(items=[RawQueryEmbeddedDocument(name='c'), RawQueryEmbeddedDocument(name='d')], callback=self.stop)
+        doc2 = self.wait()
+
+        RawQueryDocument.objects.filter({"items.name":"a"}).find_all(callback=self.stop)
+        items = self.wait()
+
+        expect(items).to_length(1)
+
+    @gen_test
+    def test_list_field_with_reference_field(self):
+        class Ref(Document):
+            __collection__ = 'ref'
+            val = StringField()
+
+        class Base(Document):
+            __collection__ = 'base'
+            list_val = ListField(ReferenceField(reference_document_type=Ref))
+
+        yield Ref.objects.delete()
+        yield Base.objects.delete()
+
+        ref1 = yield Ref.objects.create(val="v1")
+        ref2 = yield Ref.objects.create(val="v2")
+        ref3 = yield Ref.objects.create(val="v3")
+
+        base = yield Base.objects.create(list_val=[ref1, ref2, ref3])
+
+        base = yield Base.objects.get(base._id)
+        expect(base).not_to_be_null()
+
+        yield base.load_references()
+        expect(base.list_val).to_length(3)
+        expect(base.list_val[0]).to_be_instance_of(Ref)
+
+    @gen_test
+    def test_list_field_with_reference_field_without_lazy(self):
+        class Ref(Document):
+            __collection__ = 'ref'
+            val = StringField()
+
+        class Base(Document):
+            __collection__ = 'base'
+            __lazy__ = False
+            list_val = ListField(ReferenceField(reference_document_type=Ref))
+
+        yield Ref.objects.delete()
+        yield Base.objects.delete()
+
+        ref1 = yield Ref.objects.create(val="v1")
+        ref2 = yield Ref.objects.create(val="v2")
+        ref3 = yield Ref.objects.create(val="v3")
+
+        base = yield Base.objects.create(list_val=[ref1, ref2, ref3])
+
+        base = yield Base.objects.get(base._id)
+        expect(base).not_to_be_null()
+
+        expect(base.list_val).to_length(3)
+        expect(base.list_val[0]).to_be_instance_of(Ref)
